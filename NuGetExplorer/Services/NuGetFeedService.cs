@@ -4,6 +4,8 @@ using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
 using NuGet.Credentials;
+using NuGet.Packaging.Core;
+using System.IO;
 
 namespace NuGetExplorer.Services;
 
@@ -69,4 +71,32 @@ public sealed class NuGetFeedService
             .OrderByDescending(x => x, VersionComparer.VersionRelease)
             .ToList();
     }
+
+    public async Task DownloadPackageAsync(string packageId, NuGetVersion version, string destinationPath,
+        CancellationToken cancellationToken = default)
+    {
+        var resource = await _repository.GetResourceAsync<DownloadResource>();
+        using var cacheContext = new SourceCacheContext();
+        var context = new PackageDownloadContext(cacheContext);
+        var identity = new PackageIdentity(packageId, version);
+        var result = await resource.GetDownloadResourceResultAsync(identity, context,
+            Path.GetTempPath(), NullLogger.Instance, cancellationToken);
+        if (result.Status != DownloadResourceResultStatus.Available || result.PackageStream is null)
+            throw new InvalidOperationException($"The feed did not return {packageId} {version}.");
+
+        var temporaryPath = destinationPath + ".partial";
+        try
+        {
+            using (result.PackageStream)
+            await using (var output = File.Create(temporaryPath))
+                await result.PackageStream.CopyToAsync(output, cancellationToken);
+            File.Move(temporaryPath, destinationPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+        }
+    }
+
+    public string GetPackageCacheDirectory() => Path.Combine(AppContext.BaseDirectory, "NugetFiles");
 }
